@@ -1,0 +1,17 @@
+# pyATS logs and results
+*_run/
+*.xml
+*.log
+logs/
+archive/
+
+# pyATS testbed with real credentials
+testbed/testbed.yml
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# macOS
+.DS_Store
