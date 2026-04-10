@@ -1,11 +1,8 @@
-# pyATS logs and results
-*_run/
-*.xml
-*.log
-logs/
-archive/
+# Validation results (JSON output from run.py)
+results/
 
-# pyATS testbed with real credentials
+# Credentials — never commit real values
+.env
 testbed/testbed.yml
 
 # Python
