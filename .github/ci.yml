@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Unit Tests and Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Fetch the PR branch and base branch so we can diff changed files
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install paramiko ncclient requests coverage
+
+      - name: Run unit tests
+        run: |
+          python3 -m unittest discover tests/ -v 2>&1 | tee test_results.txt
+          # unittest exits 0 on pass, 1 on failure — GitHub Actions picks this up
+
+      - name: Run coverage
+        run: |
+          coverage run -m unittest discover tests/
+          coverage report --format=markdown > coverage_report.md
+          coverage report --fail-under=40
+          # Fails the job if overall coverage drops below 80%
+
+      - name: Check changed files have test coverage
+        run: |
+          # Get list of Python files changed in this PR
+          git diff --name-only origin/main...HEAD | grep "^lib/\|^validations/\|^bootstrap/" | grep "\.py$" > changed_files.txt
+          echo "Changed files:"
+          cat changed_files.txt
+
+          # Get list of files with zero coverage
+          coverage report | awk '$NF == "0%" {print $1}' > uncovered_files.txt
+
+          # Cross-reference — fail if any changed file has 0% coverage
+          MISSING=""
+          while IFS= read -r file; do
+            module=$(echo "$file" | sed 's|/|.|g' | sed 's|\.py$||')
+            if grep -q "$module" uncovered_files.txt 2>/dev/null; then
+              MISSING="$MISSING\n  ❌ $file has no test coverage"
+            fi
+          done < changed_files.txt
+
+          if [ -n "$MISSING" ]; then
+            echo -e "Changed files with no test coverage:$MISSING"
+            exit 1
+          else
+            echo "All changed files are covered by tests"
+          fi
+
+      - name: Post coverage report as PR comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            // Read test results
+            let testOutput = '';
+            try {
+              testOutput = fs.readFileSync('test_results.txt', 'utf8');
+            } catch (e) {
+              testOutput = 'Test results not available';
+            }
+
+            // Read coverage report
+            let coverageReport = '';
+            try {
+              coverageReport = fs.readFileSync('coverage_report.md', 'utf8');
+            } catch (e) {
+              coverageReport = 'Coverage report not available';
+            }
+
+            // Count passed/failed tests
+            const passed = (testOutput.match(/\.\.\. ok/g) || []).length;
+            const failed = (testOutput.match(/\.\.\. FAIL/g) || []).length;
+            const errors = (testOutput.match(/\.\.\. ERROR/g) || []).length;
+            const total  = passed + failed + errors;
+
+            const testStatus = (failed + errors) === 0
+              ? `✅ ${passed}/${total} tests passed`
+              : `❌ ${failed + errors} test(s) failed — ${passed}/${total} passed`;
+
+            const body = [
+              '## CI Results',
+              '',
+              `### Unit Tests`,
+              testStatus,
+              '',
+              '<details>',
+              '<summary>Test output</summary>',
+              '',
+              '```',
+              testOutput.slice(-3000),  // last 3000 chars to avoid huge comments
+              '```',
+              '</details>',
+              '',
+              '### Coverage Report',
+              coverageReport,
+            ].join('\n');
+
+            // Find existing bot comment and update it, or create a new one
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(c =>
+              c.user.type === 'Bot' && c.body.startsWith('## CI Results')
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
